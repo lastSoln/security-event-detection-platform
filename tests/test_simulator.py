@@ -1,6 +1,12 @@
-from schemas.events import EventType, SecurityEvent
+from datetime import datetime, timezone
+import json
+from unittest.mock import patch
+
+import pytest
+from schemas.events import EventStatus, EventType, SecurityEvent
 from simulator.events import EventFactory
 from simulator.generator import BaseEventGenerator
+from simulator.main import main as cli_main
 from simulator.scenarios import ScenarioEngine
 
 
@@ -12,6 +18,17 @@ def test_base_event_generator_envelope():
     assert "agent_id" in envelope
     assert "hostname" in envelope
     assert envelope["event_type"] == EventType.LOGIN
+
+
+def test_random_ip_subnets():
+    internal_ip = BaseEventGenerator.generate_random_ip("internal")
+    assert internal_ip.startswith("10.0.")
+
+    external_ip = BaseEventGenerator.generate_random_ip("external")
+    assert any(external_ip.startswith(prefix) for prefix in ["198.", "203.", "192.", "45.", "185."])
+
+    default_ip = BaseEventGenerator.generate_random_ip()
+    assert len(default_ip.split(".")) == 4
 
 
 def test_issue_8_login_event_simulation():
@@ -53,6 +70,20 @@ def test_issue_11_firewall_event_simulation():
     assert event.status in ["ALLOWED", "BLOCKED"]
 
 
+def test_event_custom_parameters():
+    now = datetime.now(timezone.utc)
+    event = EventFactory.create_login_event(
+        username="custom_user",
+        status=EventStatus.SUCCESS,
+        source_ip="1.2.3.4",
+        timestamp=now,
+    )
+    assert event.username == "custom_user"
+    assert event.status == EventStatus.SUCCESS
+    assert str(event.source_ip) == "1.2.3.4"
+    assert event.timestamp == now
+
+
 def test_issue_12_bruteforce_scenario():
     """Test Issue #12: Implement Brute-Force Scenario."""
     events = ScenarioEngine.generate_bruteforce_scenario(attacker_ip="198.51.100.25", count=15)
@@ -88,3 +119,41 @@ def test_scenario_suspicious_login():
     events = ScenarioEngine.generate_suspicious_login_scenario(failed_count=4)
     assert len(events) == 5
     assert events[-1].status.value == "SUCCESS"
+
+
+def test_scenario_engine_random_normal_events():
+    for _ in range(50):
+        event = ScenarioEngine.generate_random_normal_event()
+        assert isinstance(event, SecurityEvent)
+        # Validate JSON serialization & deserialization
+        dumped_json = event.model_dump_json()
+        deserialized = json.loads(dumped_json)
+        assert "event_id" in deserialized
+        assert "event_type" in deserialized
+
+
+def test_cli_file_output_sink(tmp_path):
+    output_file = tmp_path / "events.json"
+    test_args = [
+        "simulator.main",
+        "--duration",
+        "1",
+        "--rate",
+        "10",
+        "--scenario",
+        "bruteforce",
+        "--output",
+        "file",
+        "--out-file",
+        str(output_file),
+    ]
+    with patch("sys.argv", test_args):
+        cli_main()
+
+    assert output_file.exists()
+    lines = output_file.read_text().strip().split("\n")
+    assert len(lines) >= 15  # 15 scenario events + baseline events
+    for line in lines:
+        raw_event = json.loads(line)
+        event = SecurityEvent(**raw_event)
+        assert event.event_id is not None

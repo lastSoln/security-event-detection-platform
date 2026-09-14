@@ -31,7 +31,7 @@ def main():
     start_time = time.time()
     events_generated = 0
 
-    out_handle = open(args.out-file, "a") if args.output == "file" else sys.stdout
+    out_handle = open(args.out_file, "a") if args.output == "file" else sys.stdout
 
     try:
         # Inject scenario at start if specified
